@@ -1,3 +1,4 @@
+use std::fmt::format;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use ratatui::prelude::*;
@@ -13,7 +14,8 @@ use crate::data_model;
 use crate::ui;
 use crate::utils;
 use serde_json::{Value,to_string_pretty};
-
+use crate::data_model::job::settings::Settings;
+use std::path::Path;
 
 
 pub const HELPER: &[&str] = &[
@@ -205,11 +207,11 @@ async fn launch_job_rust_client(
     let job_id = 0;
 
     let project_name = proj.get_project_name()?;
-
+    
     {
         let mut job_mgr = job_mgr.lock().unwrap();
         job_mgr.add_log(job_id, "[RustClient] Starting job submission...".to_string());
-
+        
         let mut job = data_model::job::Job::new(job_id);
         job.infra = data_model::job::Infra::RustClient(
             format!("pending-{}", job_id),
@@ -217,12 +219,34 @@ async fn launch_job_rust_client(
         );
         job_mgr.jobs.insert(job_id, job);
     }
+    let base_dir = proj.get_dir();
+    let settings_path = base_dir.join("@job.toml");
+    let settings = Settings::new_from_file(&settings_path)?;
 
-    let input_files = ["input.mdp"];
-    let output_files = ["output.log"];
+    
+    let input_paths: Vec<String> = settings.files.inputs.iter()
+    .map(|filename| {
+        let full_path = base_dir.join(filename);
+        if !full_path.exists() {
+            panic!("Missing input file: {}", full_path.display());
+        }
+        full_path.to_string_lossy().into_owned()
+    })
+    .collect();
+
+    let output_paths: Vec<String> = settings.files.outputs.iter()
+        .map(|filename| {
+            base_dir.join(filename).to_string_lossy().into_owned()
+        })
+        .collect();
+
+    let input_files: Vec<&str> = input_paths.iter().map(|s| s.as_str()).collect();
+    let output_files: Vec<&str> = output_paths.iter().map(|s| s.as_str()).collect();
+
+    
 
     let job_result = rust_client
-        .submit_job("bash job.sh", &project_name, &input_files[..], &output_files[..])
+        .submit_job("bash ./job.sh", &project_name, &input_files[..], &output_files[..])
         .await
         .map_err(|e| anyhow!("submit_job failed: {}", e))?;
 
@@ -272,7 +296,6 @@ async fn launch_job_rust_client(
             );
         }
 
-        // 👇 Only print a simple in-line status to console
         println!("[RustClient] task_id {} status: {}", task_id, status);
 
         match status {
