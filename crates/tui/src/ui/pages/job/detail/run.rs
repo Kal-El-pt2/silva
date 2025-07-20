@@ -246,7 +246,7 @@ async fn launch_job_rust_client(
     
 
     let job_result = rust_client
-        .submit_job("bash ./job.sh", &project_name, &input_files[..], &output_files[..])
+        .submit_job("sh job.sh", &project_name, &input_files[..], &output_files[..])
         .await
         .map_err(|e| anyhow!("submit_job failed: {}", e))?;
 
@@ -309,6 +309,20 @@ async fn launch_job_rust_client(
                     "[RustClient] Task {} failed with status: {}",
                     task_id, status
                 );
+                return Err(anyhow!("Job failed with status: {}", status));
+            }
+            "CompletedWithError" => {
+                let error_message = task_json.get("error")
+                    .or_else(|| task_json.get("stderr"))
+                    .or_else(|| task_json.get("message"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Unknown error");
+
+                job_mgr
+                    .lock()
+                    .unwrap()
+                    .add_log(job_id, format!("Job Error: {}", error_message));
+
                 return Err(anyhow!("Job failed with status: {}", status));
             }
             _ => {
