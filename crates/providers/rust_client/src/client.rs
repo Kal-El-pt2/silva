@@ -1,8 +1,11 @@
 use std::env;
 use anyhow::Result;
 use chiral_client::file::FtpClient;
+use derivative::Derivative;
 
-#[derive(Debug,Clone)]
+
+#[derive(Derivative)]
+#[derivative(Debug)]
 pub struct RustClient {
     pub url: String,
     pub user_email: String,
@@ -11,7 +14,11 @@ pub struct RustClient {
     pub token_api: String,
     pub ftp_addr: String,
     pub ftp_port: u16,
+
+    #[derivative(Debug = "ignore")]
+    pub ftp_session: Option<FtpClient>,
 }
+
 
 impl RustClient {
     pub fn new(
@@ -32,6 +39,7 @@ impl RustClient {
             token_api,
             ftp_addr,
             ftp_port,
+            ftp_session: None,
         }
     }
 
@@ -120,54 +128,49 @@ impl RustClient {
         let mut client = chiral_client::create_client(&self.url).await?;
         chiral_client::refresh_token_api(&mut client,&self.user_email ,&self.token_api).await
     }
+    pub async fn connect_ftp(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let mut ftp_client = FtpClient::new(
+            &self.ftp_addr,
+            self.ftp_port,
+            &self.user_email,
+            &self.token_api,
+            &self.user_id,
+        );
+        ftp_client.connect()?;
+        self.ftp_session = Some(ftp_client); // persist session
+        Ok(())
+    }
+    pub async fn disconnect_ftp(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        if let Some(mut ftp_client) = self.ftp_session.take() {
+            ftp_client.disconnect();
+        }
+        Ok(())
+    }
+
 
     pub async fn make_directory(&mut self, dir_name: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let mut ftp_client = FtpClient::new(
-            &self.ftp_addr,
-            self.ftp_port,
-            &self.user_email,
-            &self.token_api,  // Changed from token_auth to token_api
-            &self.user_id,
-        );
-        
-        ftp_client.connect()?;
+        let ftp_client = self.ftp_session.as_mut().ok_or("FTP not connected")?;
         ftp_client.make_directory(dir_name)?;
-        ftp_client.disconnect();
-        
         Ok(())
     }
+
 
     pub async fn upload_file(&mut self, local_path: &str, remote_path: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let mut ftp_client = FtpClient::new(
-            &self.ftp_addr,
-            self.ftp_port,
-            &self.user_email,
-            &self.token_api,  // Changed from token_auth to token_api
-            &self.user_id,
-        );
-        
-        ftp_client.connect()?;
+        let ftp_client = self.ftp_session.as_mut().ok_or("FTP not connected")?;
         ftp_client.upload_file(local_path, remote_path)?;
-        ftp_client.disconnect();
-        
         Ok(())
     }
 
+
     pub async fn download_file(&mut self, remote_path: &str, local_path: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let mut ftp_client = FtpClient::new(
-            &self.ftp_addr,
-            self.ftp_port,
-            &self.user_email,
-            &self.token_api,  // Changed from token_auth to token_api
-            &self.user_id,
-        );
-        
-        ftp_client.connect()?;
+        let ftp_client = self.ftp_session.as_mut().ok_or("FTP not connected")?;
         ftp_client.download_file(remote_path, local_path)?;
-        ftp_client.disconnect();
-        
         Ok(())
     }
+
+
+    
+
     // Test the connection
     pub async fn test_connection(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         self.get_credits().await?;

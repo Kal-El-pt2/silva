@@ -237,8 +237,10 @@ async fn launch_job_rust_client(
                 .unwrap()
         })
         .collect();
+
+    rust_client.connect_ftp().await;
     
-    let job_dir = format!("${}", project_name);
+    let job_dir = project_name.replace("_", "-");
     
     {
         let mut job_mgr = job_mgr.lock().unwrap();
@@ -255,15 +257,6 @@ async fn launch_job_rust_client(
             let error_msg = format!("[RustClient] Failed to create FTP directory '{}': {}", job_dir, e);
             job_mgr.add_log(job_id, error_msg);
             
-            // Check if it's an authentication error specifically
-            if e.to_string().contains("authentication") || e.to_string().contains("login") {
-                return Err(anyhow::anyhow!("FTP authentication failed. Check credentials: {}", e));
-            } else if e.to_string().contains("permission") {
-                return Err(anyhow::anyhow!("FTP permission denied. Check user permissions: {}", e));
-            } else {
-                // For other errors, you might want to continue (directory might already exist)
-                job_mgr.add_log(job_id, format!("[RustClient] Continuing despite directory creation error..."));
-            }
         }
     }
 
@@ -384,22 +377,24 @@ async fn launch_job_rust_client(
                     .unwrap_or("Unknown error");
 
                 // NEW: Try reading from output.log if it exists
-                let log_path = task_json
-                    .get("output_files")
-                    .and_then(|v| v.as_array())
-                    .and_then(|arr| arr.get(0))
-                    .and_then(|v| v.as_str());
-
-                let file_message = if let Some(path) = log_path {
-                    std::fs::read_to_string(path).unwrap_or_else(|_| "Could not read output.log".to_string())
+                let log_content = if output_files.contains(&"output.log") {
+                    let remote_log_path = format!("{}/output.log", job_dir);
+                    let temp_log_path = std::env::temp_dir().join("error_output.log");
+                    
+                    match rust_client.download_file(&remote_log_path, temp_log_path.to_str().unwrap()).await {
+                        Ok(_) => {
+                            std::fs::read_to_string(&temp_log_path)
+                                .unwrap_or_else(|_| "Could not read downloaded output.log".to_string())
+                        },
+                        Err(e) => format!("Could not download output.log from server: {}", e)
+                    }
                 } else {
-                    "No output.log path found".to_string()
+                    "No output.log specified in outputs".to_string()
                 };
 
-                let combined_message = format!("{}\n{}", error_message, file_message);
-
+                let combined_message = format!("Error: {}\nLog content: {}", error_message, log_content);
                 job_mgr.lock().unwrap().add_log(job_id, format!("Job Error: {}", combined_message));
-                return Err(anyhow!("Job failed with status: {}", status));
+                return Err(anyhow!("Job failed with status: CompletedWithError - {}", combined_message));
             }
 
             _ => {
@@ -411,23 +406,16 @@ async fn launch_job_rust_client(
 
     for &file_name in &output_files {
         let local_path = base_dir.join(file_name);
-        
-        let absolute_path = std::fs::canonicalize(&local_path)
-            .map_err(|e| anyhow::anyhow!("Cannot resolve absolute path for {:?}: {}", local_path, e))?;
-        
-        let local_path_str = absolute_path.to_str().ok_or_else(|| {
-            anyhow::anyhow!("Invalid file path: {:?}", absolute_path)
-        })?;
-        
         let remote_path = format!("{}/{}", job_dir, file_name);
+        
         job_mgr
             .lock()
             .unwrap()
             .add_log(job_id, format!("[RustClient] Downloading file: {}", file_name));
 
-        rust_client.download_file(&remote_path, absolute_path.to_str().unwrap()).await
-        .map_err(|e| anyhow!("Failed to download {}: {}", file_name, e))?;
-
+        // Use local_path directly, not canonicalized path
+        rust_client.download_file(&remote_path, local_path.to_str().unwrap()).await
+            .map_err(|e| anyhow!("Failed to download {}: {}", file_name, e))?;
 
         let msg = format!("[RustClient] Successfully downloaded: {}", file_name);
         job_mgr.lock().unwrap().add_log(job_id, msg.clone());
@@ -439,6 +427,8 @@ async fn launch_job_rust_client(
         job_mgr.lock().unwrap().add_log(job_id, msg.to_string());
         println!("{}", msg);
     }
+    rust_client.disconnect_ftp().await;
+
     Ok(())
 }
 
