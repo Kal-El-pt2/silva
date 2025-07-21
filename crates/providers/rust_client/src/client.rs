@@ -153,6 +153,13 @@ impl RustClient {
         ftp_client.make_directory(dir_name)?;
         Ok(())
     }
+    pub async fn change_directory(&mut self, dir_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let ftp_client = self.ftp_session.as_mut().ok_or("FTP not connected")?;
+        ftp_client.change_directory(dir_path)?;
+        Ok(())
+    }
+
+
 
 
     pub async fn upload_file(&mut self, local_path: &str, remote_path: &str) -> Result<(), Box<dyn std::error::Error>> {
