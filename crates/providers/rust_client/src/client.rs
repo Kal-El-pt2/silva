@@ -1,7 +1,6 @@
-use chiral_client;
 use std::env;
 use anyhow::Result;
-use std::error::Error;
+use chiral_client::file::FtpClient;
 
 #[derive(Debug,Clone)]
 pub struct RustClient {
@@ -12,7 +11,6 @@ pub struct RustClient {
     pub token_api: String,
     pub ftp_addr: String,
     pub ftp_port: u16,
-    
 }
 
 impl RustClient {
@@ -38,13 +36,16 @@ impl RustClient {
     }
 
 
-    pub async fn from_env() -> Result<Self, Box<dyn Error + Send + Sync>> {
+    pub async fn from_env() -> Result<Self, Box<dyn std::error::Error >> {
         dotenvy::from_filename(".env").ok();
         let url = env::var("URL")?;
         let user_email = env::var("USER_EMAIL")?;
         let user_id = env::var("USER_ID")?;
         let token_auth = env::var("TOKEN_AUTH")?;
-        let token_api = env::var("TOKEN_API")?;
+        let mut client = chiral_client::create_client(&url).await?;
+
+        let response = chiral_client::get_token_api(&mut client, &user_email, &token_auth).await?;
+        let token_api = response.as_str().ok_or("Expected a string in token API response")?.to_string();
         let ftp_addr = env::var("FTP_ADDR")?;
         let ftp_port = env::var("FTP_PORT")?.parse::<u16>()?;
 
@@ -79,20 +80,9 @@ impl RustClient {
         ).await
     }
 
-    pub async fn submit_test_job(&mut self,job_type_name:&str,index:u32) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-        let mut client = chiral_client::create_client(&self.url).await?;
-        chiral_client::submit_test_job(&mut client, &self.user_email, &self.token_auth,job_type_name,index).await
-    }
-
     pub async fn get_job(&mut self, job_id: &str) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
         let mut client = chiral_client::create_client(&self.url).await?;
         chiral_client::get_job(&mut client, &self.user_email, &self.token_auth, job_id).await
-    }
-
-    pub async fn get_jobs(&mut self, offset: u32, count_per_page: u32) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-        let mut client = chiral_client::create_client(&self.url).await?;
-
-        chiral_client::get_jobs(&mut client, &self.user_email, &self.token_auth, offset,count_per_page).await
     }
 
     pub async fn list_projects(&mut self) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
@@ -131,7 +121,53 @@ impl RustClient {
         chiral_client::refresh_token_api(&mut client,&self.user_email ,&self.token_api).await
     }
 
+    pub async fn make_directory(&mut self, dir_name: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let mut ftp_client = FtpClient::new(
+            &self.ftp_addr,
+            self.ftp_port,
+            &self.user_email,
+            &self.token_api,  // Changed from token_auth to token_api
+            &self.user_id,
+        );
+        
+        ftp_client.connect()?;
+        ftp_client.make_directory(dir_name)?;
+        ftp_client.disconnect();
+        
+        Ok(())
+    }
 
+    pub async fn upload_file(&mut self, local_path: &str, remote_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let mut ftp_client = FtpClient::new(
+            &self.ftp_addr,
+            self.ftp_port,
+            &self.user_email,
+            &self.token_api,  // Changed from token_auth to token_api
+            &self.user_id,
+        );
+        
+        ftp_client.connect()?;
+        ftp_client.upload_file(local_path, remote_path)?;
+        ftp_client.disconnect();
+        
+        Ok(())
+    }
+
+    pub async fn download_file(&mut self, remote_path: &str, local_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let mut ftp_client = FtpClient::new(
+            &self.ftp_addr,
+            self.ftp_port,
+            &self.user_email,
+            &self.token_api,  // Changed from token_auth to token_api
+            &self.user_id,
+        );
+        
+        ftp_client.connect()?;
+        ftp_client.download_file(remote_path, local_path)?;
+        ftp_client.disconnect();
+        
+        Ok(())
+    }
     // Test the connection
     pub async fn test_connection(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         self.get_credits().await?;
