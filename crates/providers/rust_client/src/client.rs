@@ -146,6 +146,18 @@ impl RustClient {
         }
         Ok(())
     }
+    pub async fn current_directory(&mut self) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        let ftp_client = self.ftp_session.as_mut().ok_or("FTP not connected")?;
+        let current_dir = ftp_client.current_directory()?;
+        Ok(current_dir)
+    }
+
+
+    pub async fn check_if_directory_exists(&mut self, dir_path: &str) -> Result<bool, Box<dyn std::error::Error>> {
+        let ftp_client = self.ftp_session.as_mut().ok_or("FTP not connected")?;
+        let exists = ftp_client.check_if_directory_exists(dir_path)?;
+        Ok(exists)
+    }
 
 
     pub async fn make_directory(&mut self, dir_name: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -158,9 +170,6 @@ impl RustClient {
         ftp_client.change_directory(dir_path)?;
         Ok(())
     }
-
-
-
 
     pub async fn upload_file(&mut self, local_path: &str, remote_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         let ftp_client = self.ftp_session.as_mut().ok_or("FTP not connected")?;

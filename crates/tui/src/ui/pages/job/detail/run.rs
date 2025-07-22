@@ -11,7 +11,7 @@ use crate::ui;
 use crate::utils;
 use serde_json::Value;
 use crate::data_model::job::settings::Settings;
-
+use std::path::Path;
 
 pub const HELPER: &[&str] = &[
     "Launch a job", 
@@ -201,202 +201,166 @@ async fn launch_job_rust_client(
 ) -> Result<()> {
     let job_id = 0;
 
-    let project_name = proj.get_project_name()?;
-    
     {
         let mut job_mgr = job_mgr.lock().unwrap();
-        job_mgr.add_log(job_id, "[RustClient] Starting job submission...".to_string());
-        
-        let mut job = data_model::job::Job::new(job_id);
-        job.infra = data_model::job::Infra::RustClient(
-            format!("pending-{}", job_id),
-            rust_client.url.clone(),
-        );
-        job_mgr.jobs.insert(job_id, job);
+        job_mgr.add_log(job_id, format!("[RustClient Node] Launch Job started \n"));
     }
+
+    let project_name = proj.get_project_name()?;
+
+    let mut job = data_model::job::Job::new(job_id);
+    job.infra = data_model::job::Infra::RustClient(
+        format!("pending-{}", job_id),
+        rust_client.url.clone(),
+    );
+    job_mgr.lock().unwrap().jobs.insert(job_id, job);
+
+    {
+        let mut job_mgr = job_mgr.lock().unwrap();
+        job_mgr.add_log(job_id, format!("[RustClient Node] Job Created \n"));
+    }
+
     let base_dir = proj.get_dir();
+    {
+        let mut job_mgr = job_mgr.lock().unwrap();
+        job_mgr.add_log(job_id, format!("[RustClient Node] Base dir: {:?} \n", base_dir));
+    }
     let settings_path = base_dir.join("@job.toml");
     let settings = Settings::new_from_file(&settings_path)?;
 
+
     let input_files: Vec<&str> = settings.files.inputs.iter()
-    .map(|filename| {
-        std::path::Path::new(filename)
-            .file_name()
-            .unwrap()
-            .to_str()
-            .unwrap()
-    })
-    .collect();
+        .map(|filename| std::path::Path::new(filename).file_name().unwrap().to_str().unwrap())
+        .collect();
 
     let output_files: Vec<&str> = settings.files.outputs.iter()
-        .map(|filename| {
-            std::path::Path::new(filename)
-                .file_name()
-                .unwrap()
-                .to_str()
-                .unwrap()
-        })
+        .map(|filename| std::path::Path::new(filename).file_name().unwrap().to_str().unwrap())
         .collect();
 
     let script_files: Vec<&str> = settings.files.scripts.iter()
-        .map(|filename| {
-            std::path::Path::new(filename)
-                .file_name()
-                .unwrap()
-                .to_str()
-                .unwrap()
-        })
+        .map(|filename| std::path::Path::new(filename).file_name().unwrap().to_str().unwrap())
         .collect();
-    let _ = rust_client.connect_ftp().await;
-    
-    let job_dir = project_name.replace("_", "-");
-    
+
     {
         let mut job_mgr = job_mgr.lock().unwrap();
-        job_mgr.add_log(job_id, format!("[RustClient] Creating FTP directory: {}", job_dir));
+        job_mgr.add_log(job_id, format!("[RustClient Node] File Vectors Created \n"));
     }
 
+    let _ = rust_client.connect_ftp().await;
+    {
+        let mut job_mgr = job_mgr.lock().unwrap();
+        job_mgr.add_log(job_id, format!("[RustClient Node] FTP Connection Started \n"));
+    }
+    let job_dir = project_name.replace("_", "-");
+
+    {
+        let mut job_mgr = job_mgr.lock().unwrap();
+        job_mgr.add_log(job_id, format!("[RustClient Node] Making Job Dir: {:?} \n", job_dir));
+    }
     match rust_client.make_directory(&job_dir).await {
-        Ok(_) => {
-            let mut job_mgr = job_mgr.lock().unwrap();
-            job_mgr.add_log(job_id, format!("[RustClient] Successfully created directory: {}", job_dir));
-        }
+        Ok(_) => {}
         Err(e) => {
-            let mut job_mgr = job_mgr.lock().unwrap();
-            let error_msg = format!("[RustClient] Failed to create FTP directory '{}': {}", job_dir, e);
-            job_mgr.add_log(job_id, error_msg);
-            
+            let err_str = format!("{}", e);
+            if !(err_str.contains("550") || err_str.contains("File exists")) {
+                let mut job_mgr = job_mgr.lock().unwrap();
+                job_mgr.add_log(job_id, format!("[RustClient Node] Job Dir already exists "));
+                return Err(anyhow!("Failed to create remote directory '{}': {}", job_dir, err_str));
+            }
         }
     }
+    {
+        let mut job_mgr = job_mgr.lock().unwrap();
+        job_mgr.add_log(job_id, format!("[RustClient Node] Dir made\n" ));
+    }
+    
+    let mut staged_inputs: Vec<&str> = Vec::new();
+
+    staged_inputs.extend(input_files.iter().copied());
+    staged_inputs.extend(script_files.iter().copied());
 
     let _ = rust_client.change_directory(&job_dir).await;
-    for input_file in &input_files {
+    {
+        let changed_to = rust_client.current_directory().await.map_err(|e| anyhow::anyhow!("Failed to get current directory: {}", e))?;
+        let mut job_mgr = job_mgr.lock().unwrap();
+        job_mgr.add_log(job_id, format!("[RustClient Node] Dir Changed to : {:?} \n", changed_to  ));
+    }
+    let curr_dir = rust_client.current_directory().await
+        .map_err(|e| anyhow::anyhow!("Failed to get current directory: {}", e))?;
+
+
+    {
+            let mut job_mgr = job_mgr.lock().unwrap();
+            job_mgr.add_log(job_id, format!("[RustClient Node] Upload of Input and Script Files \n", )); 
+    }
+
+    for input_file in &staged_inputs {
         let local_path = base_dir.join(input_file);
         let absolute_path = std::fs::canonicalize(&local_path)
             .map_err(|e| anyhow::anyhow!("Cannot resolve absolute path for {:?}: {}", local_path, e))?;
-        let local_path_str = absolute_path.to_str().ok_or_else(|| {
-            anyhow::anyhow!("Invalid file path: {:?}", absolute_path)
-        })?;
-
-        // ✅ Correct: use only the file name
-        let remote_path = input_file.to_string();
-
+        let local_path_str = absolute_path.to_str().ok_or_else(|| anyhow::anyhow!("Invalid file path: {:?}", absolute_path))?;
+        let remote_path = Path::new(input_file).file_name().ok_or_else(|| anyhow!("Invalid filename: {}", input_file))?.to_str().ok_or_else(|| anyhow!("Non-UTF8 filename: {}", input_file))?;
         {
             let mut job_mgr = job_mgr.lock().unwrap();
-            job_mgr.add_log(job_id, format!("[RustClient] Uploading file: {} (from {})", input_file, local_path_str));
+            job_mgr.add_log(job_id, format!("[RustClient Node] Upload from Local path: {:?} \n", local_path_str ));
+            job_mgr.add_log(job_id, format!("[RustClient Node] Upload to Remote path: {:?} \n", remote_path )); 
         }
 
         match rust_client.upload_file(local_path_str, &remote_path).await {
-            Ok(_) => {
-                let mut job_mgr = job_mgr.lock().unwrap();
-                job_mgr.add_log(job_id, format!("[RustClient] Successfully uploaded: {}", input_file));
-            }
+            Ok(_) => {}
             Err(e) => {
-                let mut job_mgr = job_mgr.lock().unwrap();
-                job_mgr.add_log(job_id, format!("[RustClient] Failed to upload {}: {}", input_file, e));
                 return Err(anyhow::anyhow!("Failed to upload file {}: {}", input_file, e));
             }
         }
     }
 
-
     {
-        let mut job_mgr = job_mgr.lock().unwrap();
-        job_mgr.add_log(job_id, "[RustClient] All input files uploaded successfully".to_string());
+            let mut job_mgr = job_mgr.lock().unwrap();
+            job_mgr.add_log(job_id, format!("[RustClient Node] Upload of Input and Script Files \n", )); 
     }
+
     for output_file in &output_files {
         let local_path = base_dir.join(output_file);
         let absolute_path = std::fs::canonicalize(&local_path)
             .map_err(|e| anyhow::anyhow!("Cannot resolve absolute path for {:?}: {}", local_path, e))?;
-        let local_path_str = absolute_path.to_str().ok_or_else(|| {
-            anyhow::anyhow!("Invalid file path: {:?}", absolute_path)
-        })?;
-
-        // ✅ Correct: use only the file name
-        let remote_path = output_file.to_string();
-
+        let local_path_str = absolute_path.to_str().ok_or_else(|| anyhow::anyhow!("Invalid file path: {:?}", absolute_path))?;
+        let remote_path = Path::new(output_file).file_name().ok_or_else(|| anyhow!("Invalid filename: {}", output_file))?.to_str().ok_or_else(|| anyhow!("Non-UTF8 filename: {}", output_file))?;
         {
             let mut job_mgr = job_mgr.lock().unwrap();
-            job_mgr.add_log(job_id, format!("[RustClient] Uploading file: {} (from {})", output_file, local_path_str));
+            job_mgr.add_log(job_id, format!("[RustClient Node] Upload from Local path: {:?} \n", local_path_str ));
+            job_mgr.add_log(job_id, format!("[RustClient Node] Upload to Remote path: {:?} \n", remote_path )); 
         }
-
         match rust_client.upload_file(local_path_str, &remote_path).await {
-            Ok(_) => {
-                let mut job_mgr = job_mgr.lock().unwrap();
-                job_mgr.add_log(job_id, format!("[RustClient] Successfully uploaded: {}", output_file));
-            }
+            Ok(_) => {}
             Err(e) => {
-                let mut job_mgr = job_mgr.lock().unwrap();
-                job_mgr.add_log(job_id, format!("[RustClient] Failed to upload {}: {}", output_file, e));
                 return Err(anyhow::anyhow!("Failed to upload file {}: {}", output_file, e));
             }
         }
     }
 
-
     {
-        let mut job_mgr = job_mgr.lock().unwrap();
-        job_mgr.add_log(job_id, "[RustClient] All output files uploaded successfully".to_string());
-    }
-
-    for script_file in &script_files {
-        let local_path = base_dir.join(script_file);
-        let absolute_path = std::fs::canonicalize(&local_path)
-            .map_err(|e| anyhow::anyhow!("Cannot resolve absolute path for {:?}: {}", local_path, e))?;
-        let local_path_str = absolute_path.to_str().ok_or_else(|| {
-            anyhow::anyhow!("Invalid file path: {:?}", absolute_path)
-        })?;
-
-        // ✅ Correct: use only the file name
-        let remote_path = script_file.to_string();
-
-        {
             let mut job_mgr = job_mgr.lock().unwrap();
-            job_mgr.add_log(job_id, format!("[RustClient] Uploading file: {} (from {})", script_file, local_path_str));
-        }
-
-        match rust_client.upload_file(local_path_str, &remote_path).await {
-            Ok(_) => {
-                let mut job_mgr = job_mgr.lock().unwrap();
-                job_mgr.add_log(job_id, format!("[RustClient] Successfully uploaded: {}", script_file));
-            }
-            Err(e) => {
-                let mut job_mgr = job_mgr.lock().unwrap();
-                job_mgr.add_log(job_id, format!("[RustClient] Failed to upload {}: {}", script_file, e));
-                return Err(anyhow::anyhow!("Failed to upload file {}: {}", script_file, e));
-            }
-        }
+            job_mgr.add_log(job_id, format!("[RustClient Node] Job Submission started \n" )); 
     }
-
-
-    {
-        let mut job_mgr = job_mgr.lock().unwrap();
-        job_mgr.add_log(job_id, "[RustClient] All script files uploaded successfully".to_string());
-    }
-
 
     let job_result = rust_client
-        .submit_job("chmod +x job.sh && sh job.sh", &project_name, &input_files[..], &output_files[..])
+        .submit_job("job.sh", &project_name, &staged_inputs[..], &output_files[..])
         .await
         .map_err(|e| anyhow!("submit_job failed: {}", e))?;
 
     {
-        let mut job_mgr = job_mgr.lock().unwrap();
-        let msg = format!("[RustClient] Reply JSON: {:?}", job_result);
-        job_mgr.add_log(job_id, msg);
+            let mut job_mgr = job_mgr.lock().unwrap();
+            job_mgr.add_log(job_id, format!("[RustClient Node] Job Submission Done \n" )); 
     }
 
     let task_id = match job_result {
         Value::Object(ref map) => map.get("SubmitJob").and_then(|v| v.as_str()),
         Value::String(ref s) => Some(s.as_str()),
         _ => None,
-    }
-    .ok_or_else(|| anyhow!("[RustClient] No task ID returned"))?;
+    }.ok_or_else(|| anyhow!("[RustClient] No task ID returned"))?;
 
     {
-        let mut job_mgr = job_mgr.lock().unwrap();
-        let msg = format!("[RustClient] Job submitted! Task ID: {}.", task_id);
-        job_mgr.add_log(job_id, msg);
+            let mut job_mgr = job_mgr.lock().unwrap();
+            job_mgr.add_log(job_id, format!("[RustClient Node] Job Status loop started\n" )); 
     }
 
     let _task_json = loop {
@@ -405,151 +369,89 @@ async fn launch_job_rust_client(
         let task_json = match rust_client.get_job(task_id).await {
             Ok(value) => value,
             Err(e) => {
-                job_mgr.lock().unwrap().add_log_tmp(
-                    job_id,
-                    format!("[RustClient] ERROR while fetching status: {}", e),
-                );
                 return Err(anyhow!("RustClient error: {}", e));
             }
         };
 
-        let status = task_json
-            .get("status")
+        let status = task_json.get("status")
             .and_then(|s| s.as_str())
             .unwrap_or("unknown");
 
-        {
-            let mut job_mgr = job_mgr.lock().unwrap();
-            job_mgr.add_log_tmp(
-                job_id,
-                format!("[RustClient] task_id {} status: {}", task_id, status),
-            );
-        }
-
-        println!("[RustClient] task_id {} status: {}", task_id, status);
-
-        match status {  
-            "done" => {
-                println!("[RustClient] Task {} is done.", task_id);
-                job_mgr.lock().unwrap().clear_log_tmp(&job_id);
-                break task_json;
-            }
-            "failed" | "error" => {
-                println!(
-                    "[RustClient] Task {} failed with status: {}",
-                    task_id, status
-                );
-                return Err(anyhow!("Job failed with status: {}", status));
-            }
+        match status {
+            "done" => break task_json,
+            "failed" | "error" => return Err(anyhow!("Job failed with status: {}", status)),
             "CompletedWithError" => {
-                // First, try to get error info from the task JSON itself
                 let error_message = task_json.get("error")
                     .and_then(|e| match e {
-                        serde_json::Value::Object(obj) => {
-                            obj.get("reason").and_then(|v| v.as_str())
-                                .or_else(|| obj.get("message").and_then(|v| v.as_str()))
-                        }
-                        _ => e.as_str()
+                        serde_json::Value::Object(obj) => obj.get("reason").and_then(|v| v.as_str())
+                            .or_else(|| obj.get("message").and_then(|v| v.as_str())),
+                        _ => e.as_str(),
                     })
                     .or_else(|| task_json.get("stderr").and_then(|v| v.as_str()))
                     .or_else(|| task_json.get("message").and_then(|v| v.as_str()))
                     .or_else(|| task_json.get("details").and_then(|v| v.as_str()))
                     .unwrap_or("Unknown error");
 
-                // Log the full task JSON for debugging
-                {
-                    let mut job_mgr = job_mgr.lock().unwrap();
-                    job_mgr.add_log(job_id, format!("Full task JSON: {}", serde_json::to_string_pretty(&task_json).unwrap_or_else(|_| "Could not serialize".to_string())));
-                }
-
-                // Try reading from output.log if it exists in outputs
                 let log_content = if output_files.contains(&"output.log") {
                     let remote_log_path = "output.log".to_string();
                     let temp_log_path = std::env::temp_dir().join(format!("error_output_{}.log", task_id));
-                    
-                    {
-                        let mut job_mgr = job_mgr.lock().unwrap();
-                        job_mgr.add_log(job_id, format!("Attempting to download output.log to: {}", temp_log_path.display()));
-                    }
-                    
+
                     match rust_client.download_file(&remote_log_path, temp_log_path.to_str().unwrap()).await {
                         Ok(_) => {
                             let content = std::fs::read_to_string(&temp_log_path)
                                 .unwrap_or_else(|e| format!("Could not read downloaded output.log: {}", e));
-                            
-                            // Clean up temp file
                             let _ = std::fs::remove_file(&temp_log_path);
-                            
                             if content.trim().is_empty() {
                                 "output.log file is empty".to_string()
                             } else {
                                 content
                             }
-                        },
-                        Err(e) => {
-                            let msg = format!("Could not download output.log from server: {}", e);
-                            {
-                                let mut job_mgr = job_mgr.lock().unwrap();
-                                job_mgr.add_log(job_id, msg.clone());
-                            }
-                            
-                            msg
                         }
+                        Err(e) => format!("Could not download output.log from server: {}", e),
                     }
                 } else {
                     "No output.log specified in outputs".to_string()
                 };
 
-                let combined_message = format!(
-                    "Error: {}\nLog content: {}", 
-                    error_message, 
+                let combined_message = format!("Error: {}\nLog content: {}", error_message,
                     if log_content.len() > 1000 {
                         format!("{}... (truncated)", &log_content[..1000])
                     } else {
                         log_content
-                    }
-                );
-                
-                {
-                    let mut job_mgr = job_mgr.lock().unwrap();
-                    job_mgr.add_log(job_id, format!("Job Error: {}", combined_message));
-                }
-                
+                    });
+
                 return Err(anyhow!("Job failed with status: CompletedWithError - {}", combined_message));
             }
-
-            _ => {
-                println!("[RustClient] Task {} still running... rechecking.", task_id);
-                continue;
-            }
+            _ => continue,
         }
     };
+    {
+            let mut job_mgr = job_mgr.lock().unwrap();
+            job_mgr.add_log(job_id, format!("[RustClient Node] Job Status loop Ended \n" )); 
+    }
+    {
+            let mut job_mgr = job_mgr.lock().unwrap();
+            job_mgr.add_log(job_id, format!("[RustClient Node] Output File Download started \n" )); 
+    }
 
     for &file_name in &output_files {
         let local_path = base_dir.join(file_name);
-        let remote_path = file_name.to_string();  // ✅ ONLY the file name
-        
-        job_mgr
-            .lock()
-            .unwrap()
-            .add_log(job_id, format!("[RustClient] Downloading file: {}", file_name));
-
-        // Use local_path directly, not canonicalized path
-        rust_client.download_file(&remote_path, local_path.to_str().unwrap()).await
+        let curr_dir = file_name.to_string();
+        rust_client.download_file(&curr_dir, local_path.to_str().unwrap()).await
             .map_err(|e| anyhow!("Failed to download {}: {}", file_name, e))?;
-
-        let msg = format!("[RustClient] Successfully downloaded: {}", file_name);
-        job_mgr.lock().unwrap().add_log(job_id, msg.clone());
-        println!("{}", msg);
     }
-
     {
-        let msg = "[RustClient] Job completed successfully!";
-        job_mgr.lock().unwrap().add_log(job_id, msg.to_string());
-        println!("{}", msg);
+            let mut job_mgr = job_mgr.lock().unwrap();
+            job_mgr.add_log(job_id, format!("[RustClient Node] Output file download complete \n" )); 
     }
+    
     let _ = rust_client.disconnect_ftp().await;
 
+    {
+            let mut job_mgr = job_mgr.lock().unwrap();
+            job_mgr.add_log(job_id, format!("[RustClient Node] FTP disconnect \n" )); 
+    }
+    
     Ok(())
 }
 
