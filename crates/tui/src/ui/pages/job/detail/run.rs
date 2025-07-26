@@ -379,7 +379,7 @@ async fn launch_job_rust_client(
             .unwrap_or("unknown");
 
         match status {
-            "done" => break task_json,
+            "Completed" => break task_json,
             "failed" | "error" => return Err(anyhow!("Job failed with status: {}", status)),
             "CompletedWithError" => {
                 let error_message = task_json.get("error")
