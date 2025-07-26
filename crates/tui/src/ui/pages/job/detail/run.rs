@@ -251,7 +251,8 @@ async fn launch_job_rust_client(
         let mut job_mgr = job_mgr.lock().unwrap();
         job_mgr.add_log(job_id, format!("[RustClient Node] FTP Connection Started \n"));
     }
-    let job_dir = project_name.replace("_", "-");
+    // let job_dir = project_name.replace("_", "-");
+    let job_dir = project_name.clone();
 
     {
         let mut job_mgr = job_mgr.lock().unwrap();
@@ -318,24 +319,24 @@ async fn launch_job_rust_client(
             job_mgr.add_log(job_id, format!("[RustClient Node] Upload of Input and Script Files \n", )); 
     }
 
-    for output_file in &output_files {
-        let local_path = base_dir.join(output_file);
-        let absolute_path = std::fs::canonicalize(&local_path)
-            .map_err(|e| anyhow::anyhow!("Cannot resolve absolute path for {:?}: {}", local_path, e))?;
-        let local_path_str = absolute_path.to_str().ok_or_else(|| anyhow::anyhow!("Invalid file path: {:?}", absolute_path))?;
-        let remote_path = Path::new(output_file).file_name().ok_or_else(|| anyhow!("Invalid filename: {}", output_file))?.to_str().ok_or_else(|| anyhow!("Non-UTF8 filename: {}", output_file))?;
-        {
-            let mut job_mgr = job_mgr.lock().unwrap();
-            job_mgr.add_log(job_id, format!("[RustClient Node] Upload from Local path: {:?} \n", local_path_str ));
-            job_mgr.add_log(job_id, format!("[RustClient Node] Upload to Remote path: {:?} \n", remote_path )); 
-        }
-        match rust_client.upload_file(local_path_str, &remote_path).await {
-            Ok(_) => {}
-            Err(e) => {
-                return Err(anyhow::anyhow!("Failed to upload file {}: {}", output_file, e));
-            }
-        }
-    }
+    // for output_file in &output_files {
+    //     let local_path = base_dir.join(output_file);
+    //     let absolute_path = std::fs::canonicalize(&local_path)
+    //         .map_err(|e| anyhow::anyhow!("Cannot resolve absolute path for {:?}: {}", local_path, e))?;
+    //     let local_path_str = absolute_path.to_str().ok_or_else(|| anyhow::anyhow!("Invalid file path: {:?}", absolute_path))?;
+    //     let remote_path = Path::new(output_file).file_name().ok_or_else(|| anyhow!("Invalid filename: {}", output_file))?.to_str().ok_or_else(|| anyhow!("Non-UTF8 filename: {}", output_file))?;
+    //     {
+    //         let mut job_mgr = job_mgr.lock().unwrap();
+    //         job_mgr.add_log(job_id, format!("[RustClient Node] Upload from Local path: {:?} \n", local_path_str ));
+    //         job_mgr.add_log(job_id, format!("[RustClient Node] Upload to Remote path: {:?} \n", remote_path )); 
+    //     }
+    //     match rust_client.upload_file(local_path_str, &remote_path).await {
+    //         Ok(_) => {}
+    //         Err(e) => {
+    //             return Err(anyhow::anyhow!("Failed to upload file {}: {}", output_file, e));
+    //         }
+    //     }
+    // }
 
     {
             let mut job_mgr = job_mgr.lock().unwrap();
@@ -343,13 +344,13 @@ async fn launch_job_rust_client(
     }
 
     let job_result = rust_client
-        .submit_job("job.sh", &project_name, &staged_inputs[..], &output_files[..])
+        .submit_job("bash job.sh", &project_name, &staged_inputs[..], &output_files[..])
         .await
         .map_err(|e| anyhow!("submit_job failed: {}", e))?;
 
     {
             let mut job_mgr = job_mgr.lock().unwrap();
-            job_mgr.add_log(job_id, format!("[RustClient Node] Job Submission Done \n" )); 
+            job_mgr.add_log(job_id, format!("[RustClient Node] Job Submission Done: {job_result} \n" )); 
     }
 
     let task_id = match job_result {
